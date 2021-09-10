@@ -29,9 +29,50 @@ using System.Diagnostics;
 namespace ReadFredTreasuryRates;
 
 public class FredRateReader {
+    static readonly int[] rates_duration_list = { 1, 7, 30, 60, 90, 180, 360 }; // the durations of the available FRED series
+    Dictionary<int, string> FRED_interest_rates = new() { [1]= "USDONTD156N", [7] = "USD1WKD156N", [30] = "USD1MTD156N",
+        [60] = "USD2MTD156N", [90] = "USD3MTD156N", [180] = "USD6MTD156N", [360] = "USD12MD156N" };
+
+    DateTime rates_global_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
+    DateTime rates_global_last_date = new(); // will hold earliest existing date over all the FRED series
+    List<int> rates_interpolation_vector = new(); // for each day, has index of series to use to interpolate
+    List<float> rates_array = new(); // the actual rate vector...1 value per day in percent
+
     public FredRateReader(DateTime earliestDate) {
         var stopWatch = new Stopwatch();
+        DateTime today = DateTime.Now.Date;
 
+        stopWatch.Start();
+
+        if (earliestDate < new DateTime(2000, 1, 1))
+            throw new ArgumentException($"ReadFredTresuryRates.py:read_risk_free_rates: earliest date ({earliestDate.Date} is before 2000-01-01");
+        if (earliestDate.Date > DateTime.Now.Date)
+            throw new ArgumentException($"ReadFredTresuryRates.py:read_risk_free_rates: earliest date ({earliestDate.Date} is after today ({today}");
+
+        string today_str = today.ToString("MM/dd/yyyy");
+        foreach (var item in FRED_interest_rates) {
+            int duration = item.Key;
+            string series_name = item.Value;
+            Console.WriteLine("Reading ", series_name);
+            string FRED_url = $"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_name}&cosd=1985-01-01&coed={today_str}";
+            GetFredDataFromUrl(FRED_url);
+        }
+
+        stopWatch.Stop();
+    }
+
+    void GetFredDataFromUrl(string url) {
+        // read data from FRED website
+        var hc = new HttpClient();
+        Task<string> task = hc.GetStringAsync(url);
+        string result_str = task.Result;
+        hc.Dispose();
+
+        // split string into lines, then into fields
+        string[] lines = result_str.Split('\n');
+        foreach(string line in lines) {
+            string[] fields = line.Split(',');
+        }
     }
 
     public float RiskFreeRate(DateTime requestedDate, int duration) {
