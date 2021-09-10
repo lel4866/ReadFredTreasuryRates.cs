@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31612.314
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReadFredTreasuryRates.cs", "ReadFredTreasuryRates.cs\ReadFredTreasuryRates.cs.csproj", "{82C5A028-118F-4092-8D73-5DA687E24BDF}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReadFredTreasuryRates", "ReadFredTreasuryRates\ReadFredTreasuryRates.csproj", "{717E1CAA-B02D-4265-B8A3-0F463C1863E3}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -11,15 +11,15 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{82C5A028-118F-4092-8D73-5DA687E24BDF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{82C5A028-118F-4092-8D73-5DA687E24BDF}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{82C5A028-118F-4092-8D73-5DA687E24BDF}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{82C5A028-118F-4092-8D73-5DA687E24BDF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{717E1CAA-B02D-4265-B8A3-0F463C1863E3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{717E1CAA-B02D-4265-B8A3-0F463C1863E3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{717E1CAA-B02D-4265-B8A3-0F463C1863E3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{717E1CAA-B02D-4265-B8A3-0F463C1863E3}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {C0D0B74B-EC2A-4004-A6AA-FF70048F87E4}
+		SolutionGuid = {52014520-736C-4AC3-8A5A-97B76B32E6E9}
 	EndGlobalSection
 EndGlobal
