@@ -30,8 +30,15 @@ namespace ReadFredTreasuryRates;
 
 public class FredRateReader {
     static readonly int[] rates_duration_list = { 1, 7, 30, 60, 90, 180, 360 }; // the durations of the available FRED series
-    Dictionary<int, string> FRED_interest_rates = new() { [1]= "USDONTD156N", [7] = "USD1WKD156N", [30] = "USD1MTD156N",
-        [60] = "USD2MTD156N", [90] = "USD3MTD156N", [180] = "USD6MTD156N", [360] = "USD12MD156N" };
+    Dictionary<int, string> FRED_interest_rates = new() {
+        [1] = "USDONTD156N",
+        [7] = "USD1WKD156N",
+        [30] = "USD1MTD156N",
+        [60] = "USD2MTD156N",
+        [90] = "USD3MTD156N",
+        [180] = "USD6MTD156N",
+        [360] = "USD12MD156N"
+    };
 
     DateTime rates_global_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
     DateTime rates_global_last_date = new(); // will hold earliest existing date over all the FRED series
@@ -54,24 +61,33 @@ public class FredRateReader {
             int duration = item.Key;
             string series_name = item.Value;
             Console.WriteLine("Reading ", series_name);
-            string FRED_url = $"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_name}&cosd=1985-01-01&coed={today_str}";
-            GetFredDataFromUrl(FRED_url);
+            GetFredDataFromUrl(series_name);
         }
 
         stopWatch.Stop();
     }
 
-    void GetFredDataFromUrl(string url) {
+    void GetFredDataFromUrl(string series_name) {
         // read data from FRED website
+        string today_str = DateTime.Now.ToString("MM/dd/yyyy");
+        string FRED_url = $"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_name}&cosd=1985-01-01&coed={today_str}";
         var hc = new HttpClient();
         Task<string> task = hc.GetStringAsync(url);
         string result_str = task.Result;
         hc.Dispose();
 
-        // split string into lines, then into fields
+        // split string into lines, then into fields (should be just 2)
         string[] lines = result_str.Split('\n');
-        foreach(string line in lines) {
+        foreach (string line in lines) {
             string[] fields = line.Split(',');
+            if (fields.Length != 2 || fields[0].Length < 10)
+                throw new InvalidFredDataException(series_name, line);
+            if (!DateTime.TryParse(fields[0], out DateTime date))
+                throw new InvalidFredDataException(series_name, line);
+            float rate = float.NaN;
+            if (fields[1] != ".")
+                if (!float.TryParse(fields[1], out rate))
+                    throw new InvalidFredDataException(series_name, line);
         }
     }
 
@@ -87,4 +103,11 @@ public class SP500DividenYieldReader {
     public float SP500DividendYield(DateTime requestedDate) {
         return 0f;
     }
+}
+
+[Serializable]
+internal class InvalidFredDataException : Exception {
+    internal InvalidFredDataException() {}
+    internal InvalidFredDataException(string series_name, string row)
+        : base($"Invalid Date in series: {series_name}: {row}") {}
 }
