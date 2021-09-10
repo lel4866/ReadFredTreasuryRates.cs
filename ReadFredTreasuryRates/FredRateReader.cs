@@ -24,6 +24,7 @@
  * Lawrence E. Lewis
  */
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace ReadFredTreasuryRates;
@@ -57,28 +58,42 @@ public class FredRateReader {
             throw new ArgumentException($"ReadFredTresuryRates.py:read_risk_free_rates: earliest date ({earliestDate.Date} is after today ({today}");
 
         string today_str = today.ToString("MM/dd/yyyy");
+#if true // read data series in parallel
+        ConcurrentDictionary<int, List<(DateTime, float)>> rates = new();
+        Parallel.ForEach(FRED_interest_rates, item => {
+            int duration = item.Key;
+            string series_name = item.Value;
+            Console.WriteLine("Reading " + series_name);
+            GetFredDataFromUrl(rates, series_name, duration);
+        });
+#else // for debugging: read data series sequentially
         foreach (var item in FRED_interest_rates) {
             int duration = item.Key;
             string series_name = item.Value;
-            Console.WriteLine("Reading ", series_name);
-            GetFredDataFromUrl(series_name);
+            Console.WriteLine("Reading " + series_name);
+            GetFredDataFromUrl(rates, series_name, duration);
         }
-
+#endif
         stopWatch.Stop();
     }
 
-    void GetFredDataFromUrl(string series_name) {
+    void GetFredDataFromUrl(ConcurrentDictionary<int, List<(DateTime, float)>> rates, string series_name, int duration) {
+        List<(DateTime, float)> data = new();
+
         // read data from FRED website
         string today_str = DateTime.Now.ToString("MM/dd/yyyy");
         string FRED_url = $"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_name}&cosd=1985-01-01&coed={today_str}";
         var hc = new HttpClient();
-        Task<string> task = hc.GetStringAsync(url);
+        Task<string> task = hc.GetStringAsync(FRED_url);
         string result_str = task.Result;
         hc.Dispose();
 
         // split string into lines, then into fields (should be just 2)
         string[] lines = result_str.Split('\n');
+        bool header = true;
         foreach (string line in lines) {
+            if (header)
+                continue;
             string[] fields = line.Split(',');
             if (fields.Length != 2 || fields[0].Length < 10)
                 throw new InvalidFredDataException(series_name, line);
@@ -88,7 +103,10 @@ public class FredRateReader {
             if (fields[1] != ".")
                 if (!float.TryParse(fields[1], out rate))
                     throw new InvalidFredDataException(series_name, line);
+            data.Add((date, rate));
         }
+
+        rates.TryAdd(duration, data);
     }
 
     public float RiskFreeRate(DateTime requestedDate, int duration) {
