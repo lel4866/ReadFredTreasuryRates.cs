@@ -36,15 +36,18 @@ public class FredRateReader {
     bool rates_valid = false;
 
     static readonly int[] rates_duration_list = { 1, 7, 30, 60, 90, 180, 360 }; // the durations of the available FRED series
-    Dictionary<int, Dictionary<string, List<(DateTime, float)>>> FRED_interest_rates = new() {
-        [1] = { ["USDONTD156N"] = new List<(DateTime, float)>() },
-        [7] = { ["USD1WKD156N"] = new List<(DateTime, float)>() },
-        [30] = { ["USD1MTD156N"] = new List<(DateTime, float)>() },
-        [60] = { ["USD2MTD156N"] = new List<(DateTime, float)>() },
-        [90] = { ["USD3MTD156N"] = new List<(DateTime, float)>() },
-        [180] = { ["USD6MTD156N"] = new List<(DateTime, float)>() },
-        [360] = { ["USD12MD156N"] = new List<(DateTime, float)>() }
+
+    static readonly Dictionary<int, string> seriesNames = new() {
+        [1] = "USDONTD156N",
+        [7] = "USD1WKD156N",
+        [30] = "USD1MTD156N",
+        [60] = "USD2MTD156N",
+        [90] = "USD3MTD156N",
+        [180] = "USD6MTD156N",
+        [360] = "USD12MD156N"
     };
+
+    ConcurrentDictionary<int, List<(DateTime, float)>> rates = new();
 
     DateTime rates_global_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
     DateTime rates_global_last_date = new(); // will hold earliest existing date over all the FRED series
@@ -63,20 +66,13 @@ public class FredRateReader {
             $"FredRateReader.cs: earliest date ({earliestDate.Date}) is after today ({today})");
 
         string today_str = today.ToString("MM/dd/yyyy");
-        ConcurrentDictionary<int, List<(DateTime, float)>> rates = new();
-#if false // read data series in parallel
-        Parallel.ForEach(FRED_interest_rates, item => {
-            int duration = item.Key;
-            string series_name = item.Value;
-            Console.WriteLine("Reading " + series_name);
-            GetFredDataFromUrl(rates, series_name, duration);
+#if true // read data series in parallel
+        Parallel.ForEach(seriesNames, item => {
+            GetFredDataFromUrl(item.Value, item.Key);
         });
 #else // for debugging: read data series sequentially
-        foreach (var item in FRED_interest_rates) {
-            int duration = item.Key;
-            string series_name = item.Value;
-            Console.WriteLine("Reading " + series_name);
-            GetFredDataFromUrl(rates, series_name, duration);
+        foreach ((int duration, string seriesName) in serieNames) {
+            GetFredDataFromUrl(seriesName, duration);
             break;
         }
 #endif
@@ -96,10 +92,11 @@ public class FredRateReader {
         stopWatch.Stop();
     }
 
-    void GetFredDataFromUrl(ConcurrentDictionary<int, List<(DateTime, float)>> rates, string series_name, int duration) {
+    void GetFredDataFromUrl(string series_name, int duration) {
         List<(DateTime, float)> data = new();
 
         // read data from FRED website
+        Console.WriteLine("Reading " + series_name);
         string today_str = DateTime.Now.ToString("MM/dd/yyyy");
         string FRED_url = $"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_name}&cosd=1985-01-01&coed={today_str}";
         var hc = new HttpClient();
@@ -111,7 +108,11 @@ public class FredRateReader {
         string[] lines = result_str.Split('\n');
         bool header = true;
         foreach (string line in lines) {
-            if (header)
+            if (header) {
+                header = false;
+                continue;
+            }
+            if (line.Length == 0)
                 continue;
             string[] fields = line.Split(',');
             if (fields.Length != 2 || fields[0].Length < 10)
