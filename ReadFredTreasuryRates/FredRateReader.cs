@@ -30,15 +30,20 @@ using System.Diagnostics;
 namespace ReadFredTreasuryRates;
 
 public class FredRateReader {
+    string version = "0.0.3";
+    string version_date = "2021-09-11";
+
+    bool rates_valid = false;
+
     static readonly int[] rates_duration_list = { 1, 7, 30, 60, 90, 180, 360 }; // the durations of the available FRED series
-    Dictionary<int, string> FRED_interest_rates = new() {
-        [1] = "USDONTD156N",
-        [7] = "USD1WKD156N",
-        [30] = "USD1MTD156N",
-        [60] = "USD2MTD156N",
-        [90] = "USD3MTD156N",
-        [180] = "USD6MTD156N",
-        [360] = "USD12MD156N"
+    Dictionary<int, Dictionary<string, List<(DateTime, float)>>> FRED_interest_rates = new() {
+        [1] = { ["USDONTD156N"] = new List<(DateTime, float)>() },
+        [7] = { ["USD1WKD156N"] = new List<(DateTime, float)>() },
+        [30] = { ["USD1MTD156N"] = new List<(DateTime, float)>() },
+        [60] = { ["USD2MTD156N"] = new List<(DateTime, float)>() },
+        [90] = { ["USD3MTD156N"] = new List<(DateTime, float)>() },
+        [180] = { ["USD6MTD156N"] = new List<(DateTime, float)>() },
+        [360] = { ["USD12MD156N"] = new List<(DateTime, float)>() }
     };
 
     DateTime rates_global_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
@@ -52,14 +57,14 @@ public class FredRateReader {
 
         stopWatch.Start();
 
-        if (earliestDate < new DateTime(2000, 1, 1))
-            throw new ArgumentException($"ReadFredTresuryRates.py:read_risk_free_rates: earliest date ({earliestDate.Date} is before 2000-01-01");
-        if (earliestDate.Date > DateTime.Now.Date)
-            throw new ArgumentException($"ReadFredTresuryRates.py:read_risk_free_rates: earliest date ({earliestDate.Date} is after today ({today}");
+        Debug.Assert(earliestDate >= new DateTime(2000, 1, 1),
+            $"FredRateReader.cs: earliest date ({earliestDate.Date}) is before 2000-01-01");
+        Debug.Assert(earliestDate.Date <= DateTime.Now.Date,
+            $"FredRateReader.cs: earliest date ({earliestDate.Date}) is after today ({today})");
 
         string today_str = today.ToString("MM/dd/yyyy");
-#if true // read data series in parallel
         ConcurrentDictionary<int, List<(DateTime, float)>> rates = new();
+#if false // read data series in parallel
         Parallel.ForEach(FRED_interest_rates, item => {
             int duration = item.Key;
             string series_name = item.Value;
@@ -72,8 +77,22 @@ public class FredRateReader {
             string series_name = item.Value;
             Console.WriteLine("Reading " + series_name);
             GetFredDataFromUrl(rates, series_name, duration);
+            break;
         }
 #endif
+
+        // get latest first date over all series, earliest last date over all series
+        rates_global_first_date = earliestDate;
+        rates_global_last_date = new DateTime(3000, 1, 1);
+        foreach ((int duration, List<(DateTime, float)> series) in rates) {
+            (DateTime first_date, float rate) = series[0];
+            if (first_date > rates_global_first_date)
+                rates_global_first_date = first_date;
+            (DateTime last_date, rate) = series.Last();
+            if (last_date < rates_global_last_date)
+                rates_global_last_date = last_date;
+        }
+
         stopWatch.Stop();
     }
 
@@ -115,6 +134,11 @@ public class FredRateReader {
 }
 
 public class SP500DividenYieldReader {
+    bool dividends_valid = false;
+    List<float> dividend_array;  // vector containing sp500 dividend yield in percent
+    DateTime dividends_global_first_date;  // will hold earliest existing date in dividend_array
+    DateTime dividends_global_last_date;
+
     SP500DividenYieldReader(DateTime earliestDate) {
 
     }
@@ -125,7 +149,7 @@ public class SP500DividenYieldReader {
 
 [Serializable]
 internal class InvalidFredDataException : Exception {
-    internal InvalidFredDataException() {}
+    internal InvalidFredDataException() { }
     internal InvalidFredDataException(string series_name, string row)
-        : base($"Invalid Date in series: {series_name}: {row}") {}
+        : base($"Invalid Date in series: {series_name}: {row}") { }
 }
