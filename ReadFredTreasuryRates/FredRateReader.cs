@@ -35,8 +35,6 @@ public class FredRateReader {
 
     bool rates_valid = false;
 
-    static readonly int[] rates_duration_list = { 1, 7, 30, 60, 90, 180, 360 }; // the durations of the available FRED series
-
     static readonly Dictionary<int, string> seriesNames = new() {
         [1] = "USDONTD156N",
         [7] = "USD1WKD156N",
@@ -118,6 +116,7 @@ public class FredRateReader {
         }
 
         rates.Clear(); // free up memory
+        rates_valid = true;
 
         stopWatch.Stop();
         Console.WriteLine($"FredRateReader: Elapsed time={stopWatch.ElapsedMilliseconds/1000.0}");
