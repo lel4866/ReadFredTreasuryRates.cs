@@ -89,6 +89,64 @@ public class FredRateReader {
                 rates_global_last_date = last_date;
         }
 
+        Console.WriteLine();
+        Console.WriteLine($"Starting date for risk free rate table will be: {rates_global_first_date.ToString("yyyy-MM-dd")}");
+        Console.WriteLine($"Ending date for risk free rate table will be: {rates_global_last_date.ToString("yyyy-MM-dd")}");
+        Console.WriteLine();
+
+        // now create numpy array with 1 row for EVERY day (including weekends and holidays) between global_first_date and
+        // today, and 1 column for each FRED series named rate_array
+        // once we do this, in order to grab a rate for a specific day and duration, we just compute # of days between
+        // requested date and global_first_date, and use that as the index into the rates_array, then use the
+        // requested duration to compute interpolated_rate (see detailed explanation below)
+        int num_rows = (rates_global_last_date.AddDays(1) - rates_global_first_date).Days;
+        int num_cols = seriesNames.Count;
+        float[,] rates_array = new float[num_rows, num_cols]; // initialized to 0f
+        // until Array.Fill works with 2D array
+        for (int i = 0; i < num_rows; i++)
+            for (int j = 0; j < num_cols; j++)
+                rates_array[i, j] = float.NaN;
+
+        // interpolate to replace NaN's
+        // rates_array has 1 row for every date between rates_global_first_date and rates_global_last_date, all set to NaN
+        // as you iterate through the series, place rates into rates_array. This will leave you with some rows in rates_array
+        // that are NaN. Then , interpolate those.
+        int i_col = 0, index_of_first_rate = -1, index_of_last_date = -1;
+        foreach ((int duration, List<(DateTime, float)> series) in rates) {
+            // skip to first date of interest (rates_global_first_date)
+            foreach ((DateTime date, float rate) in series) {
+                if (date < rates_global_first_date)
+                    continue;
+                if (date > rates_global_last_date)
+                    break;
+                int date_index = (date - rates_global_first_date).Days;
+
+                // keep track of first and last rate that is not NaN
+                if (!float.IsNaN(rate) {
+                    if (index_of_first_rate == -1)
+                        index_of_first_rate = date_index;
+                    index_of_last_date = date_index;
+                }
+
+                rates_array[i_col, date_index] = rate;
+            }
+            i_col++;
+
+            // now interpolate between NaN's
+        }
+
+
+
+        // for informational purposes only
+        Console.WriteLine("duration = ", rates_duration_list[i_col])
+        row = rate_df.iloc[0]
+        Console.WriteLine(row.date.date(), row.rate)
+        row = rate_df.iloc[-1]
+        Console.WriteLine(row.date.date(), row.rate)
+        Console.WriteLine()
+
+        i_col = i_col + 1
+
         stopWatch.Stop();
     }
 
