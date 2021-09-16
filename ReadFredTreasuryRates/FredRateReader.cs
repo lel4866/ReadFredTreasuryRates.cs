@@ -32,7 +32,7 @@ namespace ReadFredTreasuryRates;
 public class FredRateReader {
     string version = "0.0.3";
     string version_date = "2021-09-11";
-
+    const int num_durations = 361; // 0 to 360
     bool rates_valid = false;
 
     static readonly Dictionary<int, string> seriesNames = new() {
@@ -45,11 +45,10 @@ public class FredRateReader {
         [360] = "USD12MD156N"
     };
 
-    private ConcurrentDictionary<int, List<(DateTime, float)>> rates = new();
+    private ConcurrentDictionary<int, List<(DateTime, float)>> fred_interest_rates = new();
 
     private DateTime rates_global_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
     private DateTime rates_global_last_date = new(); // will hold earliest existing date over all the FRED series
-    private List<int> rates_interpolation_vector = new(); // for each day, has index of series to use to interpolate
     public float[,] rates_array; // the actual rate vector...1 value per day between  in percent
 
     public FredRateReader(DateTime earliestDate) {
@@ -64,7 +63,7 @@ public class FredRateReader {
         Debug.Assert(earliestDate.Date <= DateTime.Now.Date,
             $"FredRateReader.cs: earliest date ({earliestDate.Date}) is after today ({today})");
 
-        // read rate data from FRED into ConcurrentDictionary: rates; rates is only used temporarily in this constructor
+        // read rate data from FRED into ConcurrentDictionary rates; rates is only used temporarily in this constructor
         // cleaned rate data for later use is saved in rates_array, which has 1 row for each day of data we are interested in,
         // and 1 column for each data series (each duration)
 #if true // read data series in parallel
@@ -78,52 +77,33 @@ public class FredRateReader {
         }
 #endif
 
-        // get latest first date over all series, earliest last date over all series
-        rates_global_first_date = earliestDate;
-        rates_global_last_date = new DateTime(3000, 1, 1);
-        foreach ((int duration, List<(DateTime, float)> series) in rates) {
-            (DateTime first_date, float rate) = series[0];
-            if (first_date > rates_global_first_date)
-                rates_global_first_date = first_date;
-            (DateTime last_date, rate) = series.Last();
-            if (last_date < rates_global_last_date)
-                rates_global_last_date = last_date;
-        }
-
-        Console.WriteLine();
-        Console.WriteLine($"Starting date for risk free rate table will be: {rates_global_first_date.ToString("yyyy-MM-dd")}");
-        Console.WriteLine($"Ending date for risk free rate table will be: {rates_global_last_date.ToString("yyyy-MM-dd")}");
-        Console.WriteLine();
+        // scan all series (all durations), and get latest first date , earliest last date
+        // that is, set rates_global_first_date, rates_global_last_date
+        get_first_and_last_dates(earliestDate);
 
         // now create rates_array with 1 row for EVERY day (including weekends and holidays) between global_first_date and
-        // today, and 1 column for each FRED series (of different durations)
-        // once we do this, in order to grab a rate for a specific day and duration, we just compute # of days between
-        // requested date and global_first_date, and use that as the index into the rates_array
+        // global_last_date (usually today), and 1 column for every duration between 0 and 360
         int num_rows = (rates_global_last_date.AddDays(1) - rates_global_first_date).Days;
-        int num_cols = seriesNames.Count;
-        rates_array = new float[num_rows, num_cols]; // initialized to 0f
+        rates_array = new float[num_rows, num_durations]; // initialized to 0f
         // until Array.Fill works with 2D array
         for (int i = 0; i < num_rows; i++)
-            for (int j = 0; j < num_cols; j++)
+            for (int j = 0; j < num_durations; j++)
                 rates_array[i, j] = float.NaN;
-        // rates_array now has 1 row for every date between rates_global_first_date and rates_global_last_date, all set to NaN
-        // iterate through the series read from FRED, and place each rate read into proper index in rates_array. This will
-        // leave you with some locations in rates_array that are NaN. Then, linearly interpolate to get values of those NaN's
-        int i_col = 0;
-        foreach (var (duration, series) in rates) {
-            InterpolateRates(i_col, duration, series);
-            i_col++;
-        }
 
-        rates.Clear(); // free up memory
+        // rates_array now has 1 row for every date between rates_global_first_date and rates_global_last_date, all set to NaN
+        // iterate through the rates read from FRED, and place each rate read into proper place in rates_array. This will
+        // leave you with some locations in rates_array that are NaN. Then, linearly interpolate to get values of those NaN's
+        InterpolateRatesArray();
+
+        fred_interest_rates.Clear(); // free up memory
         rates_valid = true;
 
         stopWatch.Stop();
-        Console.WriteLine($"FredRateReader: Elapsed time={stopWatch.ElapsedMilliseconds/1000.0}");
+        Console.WriteLine($"FredRateReader: Elapsed time={stopWatch.ElapsedMilliseconds / 1000.0}");
     }
 
     void GetFredDataFromUrl(string series_name, int duration) {
-        List<(DateTime, float)> data = new();
+        List<(DateTime, float)> data = new(); // will contain rates for 1 duration
 
         // read data from FRED website
         Console.WriteLine("Reading " + series_name);
@@ -156,92 +136,135 @@ public class FredRateReader {
             data.Add((date, rate));
         }
 
-        rates.TryAdd(duration, data);
+        fred_interest_rates.TryAdd(duration, data); // fred_interest_rates contains rates for each duration read
     }
 
-    void InterpolateRates(int i_col, int duration, List<(DateTime, float)> series) {
-        // rates_array has 1 row for every date between rates_global_first_date and rates_global_last_date, all set to NaN
-        // as you iterate through the series read from FRED, place each rates read into rates_array. This will leave you
-        // with some rows in rates_array that are NaN. Then, interpolate to get those values.
-        int num_rows = rates_array.GetLength(0);
-        int index_of_first_rate = -1, index_of_last_rate = -1;
-
-        // skip to first date of interest (rates_global_first_date)
-        foreach ((DateTime date, float rate) in series) {
-            if (date < rates_global_first_date)
-                continue;
-            if (date > rates_global_last_date)
-                break;
-            int date_index = (date - rates_global_first_date).Days;
-
-            // keep track of first and last rate that is not NaN
-            if (!float.IsNaN(rate)) {
-                if (index_of_first_rate == -1)
-                    index_of_first_rate = date_index;
-                index_of_last_rate = date_index;
-            }
-
-            rates_array[date_index, i_col] = rate;
+    // get latest first date over all series, earliest last date over all series
+    void get_first_and_last_dates(DateTime earliestDate) {
+        rates_global_first_date = earliestDate;
+        rates_global_last_date = new DateTime(3000, 1, 1);
+        foreach ((int duration, List<(DateTime, float)> series) in fred_interest_rates) {
+            (DateTime first_date, float rate) = series[0];
+            if (first_date > rates_global_first_date)
+                rates_global_first_date = first_date;
+            (DateTime last_date, rate) = series.Last();
+            if (last_date < rates_global_last_date)
+                rates_global_last_date = last_date;
         }
 
-        // now interpolate between NaN's
-        if (index_of_first_rate == -1)
-            throw new InvalidFredDataException(seriesNames[duration], "All data is missing.");
+        Console.WriteLine();
+        Console.WriteLine($"Starting date for risk free rate table will be: {rates_global_first_date.ToString("yyyy-MM-dd")}");
+        Console.WriteLine($"Ending date for risk free rate table will be: {rates_global_last_date.ToString("yyyy-MM-dd")}");
+        Console.WriteLine();
+    }
 
-        // fill front of array with first real rate
-        float first_rate = rates_array[index_of_first_rate, i_col];
-        for (int i = 0; i < index_of_first_rate; i++)
-            rates_array[i, i_col] = first_rate;
-
-        // fill back of array with last real rate
-        float last_rate = rates_array[index_of_last_rate, i_col];
-        for (int i = index_of_last_rate + 1; i < num_rows; i++)
-            rates_array[i, i_col] = last_rate;
-
-        // interpolate between interior NaN's
-        int i_row = index_of_first_rate;
-        Debug.Assert(!float.IsNaN(rates_array[0, i_col]));
-        while (i_row < index_of_last_rate) {
-            // find first Nan. We know it will not be in row 0, because we already filled the front of the array
-            if (!float.IsNaN(rates_array[i_row, i_col])) {
-                i_row++;
-                continue;
-            }
-
-            // find first non-NaN following found NaN. Again...this will be found because we filled back of array
-            int j;
-            for (j = i_row + 1; j < index_of_last_rate; j++) {
-                if (!float.IsNaN(rates_array[j, i_col]))
+    // fills in rates_array from fred_interest_rates dataframe values for durations 1, 7, 30, 60, 90, 180, 360
+    // note that each of those columns will have nan's (because fred_interest_rates dataframe does not have values
+    // for weekends or holidays. Also, the remaining columns (NOT 1, 7, 30, etc) will be all nan's
+    void InterpolateRatesArray() {
+        int num_rows = rates_array.GetLength(0);
+        foreach (var (duration, data) in fred_interest_rates) {
+            // now place each rate in rate_df dataframe in proper place in rates_array based on date (row) and duration (column)
+            int index_of_first_rate = -1, index_of_last_rate = -1;
+            foreach (var (date, rate) in data) {
+                if (date < rates_global_first_date)
+                    continue;
+                if (date > rates_global_last_date)
                     break;
+                int date_index = (date - rates_global_first_date).Days;
+                Debug.Assert(date_index >= 0);
+                Debug.Assert(date_index < num_rows);
+                if (!float.IsNaN(rate)) {
+                    rates_array[date_index, duration] = rate;
+                    // keep track of first and last rates which are not NaN
+                    if (index_of_first_rate == -1)
+                        index_of_first_rate = date_index;
+                    index_of_last_rate = date_index;
+                }
             }
-            i_row--; // index of first NaN
 
-            Debug.Assert(i_row >= index_of_first_rate);
-            Debug.Assert(!float.IsNaN(rates_array[i_row, i_col]));
-            Debug.Assert(j < index_of_last_rate); // assert we found an Nan
-            Debug.Assert(!float.IsNaN(rates_array[j, i_col]));
+            if (index_of_first_rate == -1)
+                throw new InvalidFredDataException(seriesNames[duration], $"All data is missing for duration {duration}");
+            // fill front of array with first rate that is not NaN
+            float first_rate = rates_array[index_of_first_rate, duration];
+            for (int i = 0; i < index_of_first_rate; i++)
+                rates_array[i, duration] = first_rate;
+            // fill back of array with last rate that is not NaN
+            float last_rate = rates_array[index_of_last_rate, duration];
+            for (int i = index_of_last_rate + 1; i < num_rows; i++)
+                rates_array[i, duration] = last_rate;
 
-            // now, linearly interpolate between first NaN and last Nan; i is index of 1st Nan, j is index of next non-NaN
-            float denominator = j - i_row;
-            float initial_value = rates_array[i_row, i_col];
-            float range = rates_array[j, i_col] - initial_value;
-            for (int k = i_row+1; k < j; k++) {
-                Debug.Assert(float.IsNaN(rates_array[k, i_col]));
-                float ratio = (k - i_row) / denominator;
-                rates_array[k, i_col] = initial_value + ratio * range;
+            // interpolate between interior NaN's for this duration
+            int i_row = index_of_first_rate;
+            Debug.Assert(!float.IsNaN(rates_array[0, duration]));
+            while (i_row < index_of_last_rate) {
+                // find index of first NaN
+                if (!float.IsNaN(rates_array[i_row, duration])) {
+                    i_row++;
+                    continue;
+                }
+                // we found a NaN in rates_array[i_row, duration]
+
+                // find next non-NaN. This will be found because we filled back of array with non-NaN's
+                int j;
+                for (j = i_row + 1; j < index_of_last_rate; j++) {
+                    if (!float.IsNaN(rates_array[j, duration]))
+                        break;
+                }
+                Debug.Assert(j < index_of_last_rate); // assert we found an Nan
+                float next_value = rates_array[j, duration]; // next_value is first rate that is not NaN after Nan in i_row
+                Debug.Assert(!float.IsNaN(next_value));
+
+                // interpolate between non-NaN in i_row-1 and non-Nan in j;
+                int index_range = j - (i_row - 1);
+                float value = rates_array[i_row - 1, duration]; // starting value
+                float value_range = next_value - value;
+                float value_increment = value_range / index_range;
+
+                for (int nan_index = i_row; nan_index < j; nan_index++) {
+                    value = value + value_increment;
+                    rates_array[nan_index, duration] = value;
+
+                    i_row = j + 1; // set i_row to next row to look for NaN (since we know row j is not NaN)
+                }
             }
-            i_row = j+1;
+        }
+
+        // now interpolate NaN's in duration columns that were not in FRED database (i.e. not 1, 7, 30, 60, 90, 180, 360)
+        for (int i_row = 0; i_row < rates_array.GetLength(0); i_row++) {
+        }
+    }
+
+    // interpolates values between vector[col1] and vector[col2]
+    // vector[col1] and vector[col2] MUST NOT be nan's.
+    void Interpolate(float[] vector, int col1, int col2) {
+        Debug.Assert(!float.IsNaN(vector[col1]));
+        Debug.Assert(!float.IsNaN(vector[col2]));
+
+        int idx_range = col2 - col1;
+        float interpolated_value = vector[col1];  // starting value
+        float value_range = vector[col2] - interpolated_value;
+        float value_increment = value_range / idx_range;
+        for (int i = col1 + 1; i < col2; i++) {
+            interpolated_value = interpolated_value + value_increment;
+            vector[i] = interpolated_value;
         }
     }
 
     public float RiskFreeRate(DateTime requestedDate, int duration) {
-        return 0f;
+        Debug.Assert(requestedDate >= rates_global_first_date,
+            $"FredRateReader.cs::RiskFreeRate: requested date ({requestedDate.Date}) is before earliest available ({rates_global_first_date.Date}).");
+        Debug.Assert(requestedDate <= rates_global_last_date,
+            $"FredRateReader.cs::RiskFreeRate: requested date ({requestedDate.Date}) is after latest available ({rates_global_last_date.Date}).");
+
+        int date_index = (requestedDate - rates_global_first_date).Days;
+        return rates_array[date_index, duration];
     }
 }
 
 public class SP500DividenYieldReader {
     bool dividends_valid = false;
-    List<float> dividend_array;  // vector containing sp500 dividend yield in percent
+    List<float> dividend_array = new();  // vector containing sp500 dividend yield in percent
     DateTime dividends_global_first_date;  // will hold earliest existing date in dividend_array
     DateTime dividends_global_last_date;
 
