@@ -30,8 +30,8 @@ using System.Diagnostics;
 namespace ReadFredTreasuryRates;
 
 public class FredRateReader {
-    string version = "0.0.3";
-    string version_date = "2021-09-11";
+    public string version = "0.0.3";
+    public string version_date = "2021-09-13";
 
     bool rates_valid = false;
 
