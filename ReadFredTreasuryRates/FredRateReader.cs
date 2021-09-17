@@ -34,10 +34,9 @@ namespace ReadFredTreasuryRates;
 
 public class FredRateReader
 {
-    string version = "0.0.3";
-    string version_date = "2021-09-11";
-    const int num_durations = 361; // 0 to 360
-    bool rates_valid = false;
+    public string version = "0.0.3";
+    public string version_date = "2021-09-11";
+    public bool rates_valid = false;
 
     static readonly Dictionary<int, string> seriesNames = new()
     {
@@ -51,16 +50,15 @@ public class FredRateReader
     };
 
     private ConcurrentDictionary<int, List<(DateTime, float)>> fred_interest_rates = new();
-
-    private DateTime rates_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
-    private DateTime rates_last_date = new(); // will hold earliest existing date over all the FRED series
-    public float[,] rates_array = new float[1, 1]; // the actual rate vector...1 value per day between  in percent
+    public DateTime rates_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
+    public DateTime rates_last_date = DateTime.Now; // will hold earliest existing date over all the FRED series
+    private string today_str = DateTime.Now.ToString("MM/dd/yyyy");
+    public float[,] rates_array = new float[1, 1]; // the actual rate vector...1 value per day
 
     public FredRateReader(DateTime earliestDate)
     {
         var stopWatch = new Stopwatch();
         DateTime today = DateTime.Now.Date;
-        string today_str = today.ToString("MM/dd/yyyy");
 
         stopWatch.Start();
 
@@ -112,7 +110,6 @@ public class FredRateReader
 
         // read data from FRED website
         Console.WriteLine("Reading " + series_name);
-        string today_str = DateTime.Now.ToString("MM/dd/yyyy");
         string FRED_url = $"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_name}&cosd=1985-01-01&coed={today_str}";
         var hc = new HttpClient();
         Task<string> task = hc.GetStringAsync(FRED_url);
@@ -132,7 +129,7 @@ public class FredRateReader
             if (line.Length == 0)
                 continue;
             string[] fields = line.Split(',');
-            if (fields.Length != 2 || fields[0].Length < 10)
+            if (fields.Length != 2)
                 throw new InvalidFredDataException(series_name, line);
             if (!DateTime.TryParse(fields[0], out DateTime date))
                 throw new InvalidFredDataException(series_name, line);
@@ -146,24 +143,20 @@ public class FredRateReader
         fred_interest_rates.TryAdd(duration, data); // fred_interest_rates contains rates for each duration read
     }
 
-    // get latest first date over all series, earliest last date over all series
+    // get latest first date over all series
     void GetFirstAndLastDates(DateTime earliestDate)
     {
         rates_first_date = earliestDate;
-        rates_last_date = new DateTime(3000, 1, 1);
         foreach ((int duration, List<(DateTime, float)> series) in fred_interest_rates)
         {
             (DateTime first_date, float rate) = series[0];
             if (first_date > rates_first_date)
                 rates_first_date = first_date;
-            (DateTime last_date, rate) = series.Last();
-            if (last_date < rates_last_date)
-                rates_last_date = last_date;
         }
 
         Console.WriteLine();
         Console.WriteLine($"Starting date for risk free rate table will be: {rates_first_date.ToString("yyyy-MM-dd")}");
-        Console.WriteLine($"Ending date for risk free rate table will be: {rates_last_date.ToString("yyyy-MM-dd")}");
+        Console.WriteLine($"Ending date for risk free rate table will be: {today_str}");
         Console.WriteLine();
     }
 
@@ -172,8 +165,8 @@ public class FredRateReader
     void CreateRatesArray()
     {
         int num_rows = (rates_last_date - rates_first_date).Days + 1;
-        rates_array = new float[num_rows, num_durations]; // initialized to 0f
-        new Span2D<float>(rates_array).Fill(float.NaN);
+        rates_array = new float[num_rows, 361]; // initialized to 0f
+        new Span2D<float>(rates_array).Fill(float.NaN); // crappy C# way to fill array with a value
     }
 
     // fill in rates_array from FRED data (in rates Dictionary) for durations 1, 7, 30, 60, 90, 180, 360.
@@ -184,7 +177,8 @@ public class FredRateReader
     {
         int num_rows = rates_array.GetLength(0);
 
-        // copy each column read from FRED database to rates_array and interpolate away any NaN's in those columns
+        // copy each column read from FRED database to rates_array. Remember, there are lots of columns in 
+        // rates array for durations not available from FRED. These will have all NaN's
         foreach (var (duration, fred_data) in fred_interest_rates)
         {
             int index_of_first_rate = -1, index_of_last_rate = -1;
@@ -203,15 +197,17 @@ public class FredRateReader
                     // keep track of first and last rates which are not NaN
                     if (index_of_first_rate == -1)
                         index_of_first_rate = date_index;
-                    index_of_last_rate = date_index;
+                    index_of_last_rate = date_index; // will hold index of last value that is not a NaN
                 }
             }
 
+            // remove NaN's from rates_array in columns that got data from FRED database (weekends, holidays, etc)
+            // that is, interpolate down the column
             InterpolateRatesArrayColumn(duration, index_of_first_rate, index_of_last_rate);
         }
 
-        // now for each row in rates_array (representing a date), interpolate rates that are NaN's. There will be
-        // an NaN in each duration column that was not read from FRED
+        // remove NaN's from rates_array in columns that didn't get rates from FRED database
+        // that is, interpolate across rows
         for (int row = 0; row < num_rows; row++)
             InterpolateRatesArrayRow(row);
     }
@@ -279,7 +275,7 @@ public class FredRateReader
     // that were read from FRED. Ccolumn 0 of rates_array is unused and remains all NaN
     void InterpolateRatesArrayRow(int row)
     {
-        int next_nan, duration = 1;
+        int next_non_nan, duration = 1;
         while (duration <= 360)
         {
             // find index of first NaN
@@ -291,36 +287,36 @@ public class FredRateReader
             // we found a NaN in rates_array[row, duration]
 
             // find next non-NaN. This will be found because last column (360) has no NaN's
-            for (next_nan = duration + 1; next_nan <= 360; next_nan++)
+            for (next_non_nan = duration + 1; next_non_nan <= 360; next_non_nan++)
             {
-                if (!float.IsNaN(rates_array[row, next_nan]))
+                if (!float.IsNaN(rates_array[row, next_non_nan]))
                     break;
             }
-            Debug.Assert(next_nan <= 360); // assert we found an Nan
-            float next_value = rates_array[row, next_nan]; // next_value is first rate that is not NaN after Nan in duration
+            Debug.Assert(next_non_nan <= 360); // assert we found an Nan
+            float next_value = rates_array[row, next_non_nan]; // next_value is first rate that is not NaN after Nan in duration
             Debug.Assert(!float.IsNaN(next_value));
 
             // interpolate between non-NaN in column duration-1 and non-Nan in duration;
-            int index_range = next_nan - (duration - 1);
+            int index_range = next_non_nan - (duration - 1);
             float value = rates_array[row, duration - 1]; // starting value
             float value_range = next_value - value;
             float value_increment = value_range / index_range;
 
-            for (int nan_index = duration; nan_index < next_nan; nan_index++)
+            for (int nan_index = duration; nan_index < next_non_nan; nan_index++)
             {
                 value = value + value_increment;
                 rates_array[row, nan_index] = value;
             }
 
-            duration = next_nan + 1; // set duration to next column to look for NaN (since we know column j is not NaN)
+            duration = next_non_nan + 1; // set duration to next column to look for NaN (since we know column j is not NaN)
         }
     }
 
     void ConvertRatesForBlackScholes()
     {
         int num_rows = rates_array.GetLength(0);
-        for (int row=0; row<num_rows; row++)
-            for (int duration=1; duration<=360; duration++)
+        for (int row = 0; row < num_rows; row++)
+            for (int duration = 1; duration <= 360; duration++)
                 rates_array[row, duration] = (float)(360.0 / duration * Math.Log(1.0 + rates_array[row, duration] * duration / 365.0));
     }
 
@@ -330,6 +326,8 @@ public class FredRateReader
             $"FredRateReader.cs::RiskFreeRate: requested date ({requestedDate.Date}) is before earliest available ({rates_first_date.Date}).");
         Debug.Assert(requestedDate <= rates_last_date,
             $"FredRateReader.cs::RiskFreeRate: requested date ({requestedDate.Date}) is after latest available ({rates_last_date.Date}).");
+        Debug.Assert(duration > 0 && duration <= 360,
+            $"FredRateReader.cs::RiskFreeRate: duration must be between 1 and 360, not {duration}.");
 
         int date_index = (requestedDate - rates_first_date).Days;
         return rates_array[date_index, duration];
@@ -338,18 +336,141 @@ public class FredRateReader
 
 public class SP500DividendYieldReader
 {
-    bool dividends_valid = false;
-    List<float> dividend_array = new();  // vector containing sp500 dividend yield in percent
-    DateTime dividends_global_first_date;  // will hold earliest existing date in dividend_array
-    DateTime dividends_global_last_date;
+    public bool dividends_valid = false;
+    public float[] dividends_array = new float[1];  // vector containing sp500 dividend yield in percent
+    public DateTime dividends_first_date;  // will hold earliest existing date in dividend_array
+    public readonly DateTime dividends_last_date = DateTime.Now; // will hold latest existing date in dividend_array
+    private const string url = "https://data.nasdaq.com/api/v3/datasets/MULTPL/SP500_DIV_YIELD_MONTH.csv?api_key=r1LNaRv-SYEyP9iY8BKj";
 
-    SP500DividendYieldReader(DateTime earliestDate)
+    public SP500DividendYieldReader(DateTime earliestDate)
     {
+        var hc = new HttpClient();
+        Task<string> task = hc.GetStringAsync(url);
+        string result_str = task.Result;
+        hc.Dispose();
 
+        // split string into lines, then into fields (should be just 2)
+        string[] lines = result_str.Split('\n');
+        // for this data from Nasdaq Data Link (formerly Quandl) 1st data row is newest
+
+        // parse lines in to date and dividend and add to a sorted dictionary
+        bool header = true;
+        SortedDictionary<DateTime, float> dividends = new();
+        foreach (string line in lines)
+        {
+            // skip header
+            if (header)
+            {
+                header = false;
+                continue;
+            }
+            // skip blank lines
+            if (line.Length == 0)
+                continue;
+
+            // parse line: date, dividend
+            string[] fields = line.Split(',');
+            if (fields.Length != 2)
+                throw new InvalidDividenDataException(line);
+            if (!DateTime.TryParse(fields[0], out DateTime date))
+                throw new InvalidDividenDataException(line);
+            if (!float.TryParse(fields[1], out float dividend))
+                throw new InvalidDividenDataException(line);
+
+            dividends[date] = dividend;
+        }
+
+        // if no dividends found, throw exception
+        if (dividends.Count == 0)
+            throw new InvalidDividenDataException("No dividend data read from Nasdaq Data Link");
+
+        // now allocate dividends array and fill it with values read from Nasdaq Data Link
+        // then interpolate away any NaN's
+        CreateDividendsArray(dividends);
     }
-    public float SP500DividendYield(DateTime requestedDate)
+
+    // create rates_array with 1 row for EVERY day (including weekends and holidays) between global_first_date and
+    // global_last_date (usually today), and 1 column for every duration between 0 and 360. Initialize with NaN's
+    // Then, interpolate away any NaN's
+    void CreateDividendsArray(SortedDictionary<DateTime, float> dividends)
     {
-        return 0f;
+        Debug.Assert(dividends.Count > 0);
+        (dividends_first_date, _) = dividends.First();
+        int num_rows = (dividends_last_date - dividends_first_date).Days + 1;
+        dividends_array = new float[num_rows]; // initialized to 0f
+        new Span<float>(dividends_array).Fill(float.NaN); // crappy C# way to fill array with a value
+
+        // fill dividends_array with values read from Nasdaq Data Link (they are in dividends SortedDictionary)
+        int index_of_first_dividend = -1, index_of_last_dividend = -1; // will hold indices of first, last non-NaN
+        foreach (var (date, dividend) in dividends)
+        {
+            int date_index = (date - dividends_first_date).Days;
+            dividends_array[date_index] = dividend;
+
+            if (date_index < index_of_first_dividend)
+                index_of_first_dividend = date_index;
+            if (date_index > index_of_last_dividend)
+                index_of_last_dividend = date_index;
+        }
+
+        // interpolate away NaN's
+        InterpolateDividendsArray(index_of_first_dividend, index_of_last_dividend);
+    }
+
+    // Each row in rates_array contains values for all durations for a given date, but durations that were not read from FRED
+    // will have NaN's. Replace those NaN's by piecewise linear interpolation using non-NaN values that surround the NaN's
+    // We know that the beginning and ending elements of each row ARE NOT NaN's because they represent durations of 1 and 360
+    // that were read from FRED. Ccolumn 0 of rates_array is unused and remains all NaN
+    void InterpolateDividendsArray(int index_of_first_dividend, int index_of_last_dividend)
+    {
+        Debug.Assert(index_of_first_dividend >= 0);
+        Debug.Assert(index_of_last_dividend >= 0);
+
+        int num_rows = dividends_array.Length;
+        // fill front of array with first dividend that is not NaN
+        float first_dividend = dividends_array[index_of_first_dividend];
+        for (int i = 0; i < index_of_first_dividend; i++)
+            dividends_array[i] = first_dividend;
+        // fill back of column with last rate that is not NaN
+        float last_dividend = dividends_array[index_of_last_dividend];
+        for (int i = index_of_last_dividend + 1; i < num_rows; i++)
+            dividends_array[i] = last_dividend;
+
+        int next_nan;
+        // interpolate between interior NaN's for this duration
+        Debug.Assert(!float.IsNaN(dividends_array[0]));
+        int row = index_of_first_dividend; // row will hold index of first non-NaN preceeding NaN
+        while (row < index_of_last_dividend)
+        {
+            // find index of first NaN
+            if (!float.IsNaN(dividends_array[row]))
+                continue;
+            // we found a NaN in dividends_array[row]
+
+            // find next non-NaN
+            for (next_nan = row + 1; next_nan < num_rows; next_nan++)
+            {
+                if (!float.IsNaN(dividends_array[next_nan]))
+                    break;
+            }
+            Debug.Assert(next_nan < num_rows); // assert we found an Nan
+            float next_value = dividends_array[next_nan]; // next_value is first rate that is not NaN after Nan in duration
+            Debug.Assert(!float.IsNaN(next_value));
+
+            // interpolate between non-NaN value in row row-1 and non-Nan value in row next_non_nan;
+            int index_range = next_nan - (row - 1);
+            float value = dividends_array[row]; // starting value
+            float value_range = next_value - value;
+            float value_increment = value_range / index_range;
+
+            for (int nan_index = row + 1; nan_index < next_nan; nan_index++)
+            {
+                value = value + value_increment;
+                dividends_array[nan_index] = value;
+            }
+
+            row = next_nan + 1; // set duration to next column to look for NaN (since we know column j is not NaN)
+        }
     }
 }
 
@@ -358,5 +479,13 @@ internal class InvalidFredDataException : Exception
 {
     internal InvalidFredDataException() { }
     internal InvalidFredDataException(string series_name, string row)
-        : base($"Invalid Date in series: {series_name}: {row}") { }
+        : base($"Invalid data in rate series: {series_name}: {row}") { }
+}
+
+[Serializable]
+internal class InvalidDividenDataException : Exception
+{
+    internal InvalidDividenDataException() { }
+    internal InvalidDividenDataException(string row)
+        : base($"Invalid data in S&P 500 Dividend Yield series: {row}") { }
 }
