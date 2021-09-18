@@ -90,7 +90,7 @@ public class FredRateReader {
         rates_valid = true;
     }
 
-    void GetFredDataFromUrl(string series_name, int duration) {
+    private void GetFredDataFromUrl(string series_name, int duration) {
         List<(DateTime, float)> data = new(); // will contain rates for 1 duration
 
         // read data from FRED website
@@ -127,7 +127,7 @@ public class FredRateReader {
     }
 
     // get latest first date over all series
-    void GetFirstAndLastDates(DateTime earliestDate) {
+    private void GetFirstAndLastDates(DateTime earliestDate) {
         rates_first_date = earliestDate;
         foreach ((int duration, List<(DateTime, float)> series) in fred_interest_rates) {
             (DateTime first_date, float rate) = series[0];
@@ -143,7 +143,7 @@ public class FredRateReader {
 
     // create rates_array with 1 row for EVERY day (including weekends and holidays) between global_first_date and
     // global_last_date (usually today), and 1 column for every duration between 0 and 360. Initialize with NaN's
-    void CreateRatesArray() {
+    private void CreateRatesArray() {
         int num_rows = (rates_last_date - rates_first_date).Days + 1;
         rates_array = new float[num_rows, 361]; // initialized to 0f
         new Span2D<float>(rates_array).Fill(float.NaN); // crappy C# way to fill array with a value
@@ -153,7 +153,7 @@ public class FredRateReader {
     // Each of those columns will still have NaN's because fred_interest_rates dataframe does not have values
     // values for weekends or holidays. Also, most columns representing durations other than 1, 7, 30, etc.,
     // will still have all NaN's. Then, replace NaN's by interpolating using non-NaN's
-    void FillRatesArray() {
+    private void FillRatesArray() {
         int num_rows = rates_array.GetLength(0);
 
         // copy each column read from FRED database to rates_array. Remember, there are lots of columns in 
@@ -190,7 +190,7 @@ public class FredRateReader {
 
     // Replace NaN's in rates_array by piecewise linear interpolation using non-NaN values that surround the NaN's
     // This is only for columns that represent durations read from the FRED database (other columns will be all NaN's)
-    void InterpolateRatesArrayColumn(int duration, int index_of_first_rate, int index_of_last_rate) {
+    private void InterpolateRatesArrayColumn(int duration, int index_of_first_rate, int index_of_last_rate) {
         int num_rows = rates_array.GetLength(0);
         // for this duration, get index of first NaN, index of last NaN
         if (index_of_first_rate == -1)
@@ -244,7 +244,7 @@ public class FredRateReader {
     // will have NaN's. Replace those NaN's by piecewise linear interpolation using non-NaN values that surround the NaN's
     // We know that the beginning and ending elements of each row ARE NOT NaN's because they represent durations of 1 and 360
     // that were read from FRED. Ccolumn 0 of rates_array is unused and remains all NaN
-    void InterpolateRatesArrayRow(int row) {
+    private void InterpolateRatesArrayRow(int row) {
         int next_non_nan, duration = 1;
         while (duration <= 360) {
             // find index of first NaN
@@ -278,11 +278,47 @@ public class FredRateReader {
         }
     }
 
-    void ConvertRatesForBlackScholes() {
+    private void ConvertRatesForBlackScholes() {
         int num_rows = rates_array.GetLength(0);
         for (int row = 0; row < num_rows; row++)
             for (int duration = 1; duration <= 360; duration++)
                 rates_array[row, duration] = (float)(360.0 / duration * Math.Log(1.0 + rates_array[row, duration] * duration / 365.0));
+    }
+
+    // make sure rates_array has reasonable values
+    public bool RateSanityCheck() {
+        const float min_rate = 0;
+        const float max_rate = 30f;
+        const float max_rate_change = 0.5f;
+        // make sure risk free rates greater than 0 and less than 30
+        // make sure the change between any days is less than 0.5
+        bool passed = true;
+
+        // initialize prior_rates for each duration
+        float[] prior_rates = new float[rates_array.GetLength(1)];
+        for (int i = 1; i < rates_array.GetLength(1); i++)
+            prior_rates[i] = rates_array[0, i];
+
+        for (int row = 0; row < rates_array.GetLength(0); row++) {
+            for (int duration = 1; duration < rates_array.GetLength(1); duration++) {
+                DateTime date = rates_first_date.AddDays(row);
+                float rate = rates_array[row, duration];
+                if (rate <= min_rate || rate >= max_rate) {
+                    Console.WriteLine($"ReadFredTreasuryRates.py:rate_sanity_check: rate for duration: {duration}, date: {date}, is not reasonable: {rate}");
+                    passed = false;
+                    continue;
+                }
+
+                float change_in_rate = Math.Abs(rate - prior_rates[duration]);
+                if (change_in_rate > max_rate_change) {
+                    Console.WriteLine($"ReadFredTreasuryRates.py:rate_sanity_check: change in rate for duration: {duration}, date: {date}, is not reasonable: {change_in_rate}");
+                    passed = false;
+                }
+                prior_rates[duration] = rate;
+            }
+        }
+
+        return passed;
     }
 
     // main function used to get a risk free rate for a specified date and duration
@@ -428,6 +464,31 @@ public class SP500DividendYieldReader {
 
             row = next_non_nan + 1; // set duration to next column to look for NaN (since we know column j is not NaN)
         }
+    }
+
+    public bool DividendSanityCheck() {
+        // make sure dividend yield is greater than 0% and less than 5%
+        // make sure the change between any days is less than 0.2%
+        bool passed = true;
+        float prior_dividend = dividends_array[0];
+        foreach (var dividend in dividends_array) {
+            if (dividend <= 0 || dividend >= 5) {
+                DateTime date = dividends_first_date.AddDays(1);
+                Console.WriteLine($"ReadFredTreasuryRates.py:dividend_sanity_check: rate for {date}, is not reasonable: {dividend}");
+                passed = false;
+                continue;
+            }
+
+            float dividend_change = Math.Abs(dividend - prior_dividend);
+            prior_dividend = dividend;
+            if (dividend_change >= 1) {
+                DateTime date = dividends_first_date.AddDays(1);
+                Console.WriteLine($"ReadFredTreasuryRates.py:dividend_sanity_check: change in dividend for {date}, is not reasonable: {dividend_change}");
+                passed = false;
+            }
+        }
+
+        return passed;
     }
 
     // main function used to get a dividend yield in percent for a specified date

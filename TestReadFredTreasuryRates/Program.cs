@@ -12,6 +12,7 @@ var rate_reader = new FredRateReader(new DateTime(2000, 1, 1));
 stopWatch.Stop();
 Console.WriteLine($"FredRateReader: Elapsed time={stopWatch.ElapsedMilliseconds / 1000.0} seconds");
 
+rate_reader.RateSanityCheck();
 DateTime date0 = new DateTime(2020, 6, 15);
 float rate1 = rate_reader.RiskFreeRate(date0, 1);
 float rate9 = rate_reader.RiskFreeRate(date0, 9);
@@ -28,6 +29,7 @@ var dividend_reader = new SP500DividendYieldReader(new DateTime(2010, 1, 1));
 stopWatch.Stop();
 Console.WriteLine($"SP500DividendYieldReader: Elapsed time={stopWatch.ElapsedMilliseconds / 1000.0} seconds");
 
+dividend_reader.DividendSanityCheck();
 var yield1 = dividend_reader.DividendYield(new DateTime(2016, 6, 1));
 var yield2 = dividend_reader.DividendYield(DateTime.Today);
 
