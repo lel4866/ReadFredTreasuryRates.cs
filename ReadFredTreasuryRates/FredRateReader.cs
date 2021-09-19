@@ -32,13 +32,13 @@ using System.Diagnostics;
 using Microsoft.Toolkit.HighPerformance; // for Span2D
 using System.Linq;
 using System.Net.Http;
+using System.IO;
 
 namespace ReadFredTreasuryRates;
 
 public class FredRateReader {
-    public string version = "0.0.3";
-    public string version_date = "2021-09-11";
-    public bool rates_valid = false;
+    public const string version = "0.0.3";
+    public const string version_date = "2021-09-11";
 
     static readonly Dictionary<int, string> seriesNames = new() {
         [1] = "USDONTD156N",
@@ -50,16 +50,18 @@ public class FredRateReader {
         [360] = "USD12MD156N"
     };
 
-    private ConcurrentDictionary<int, List<(System.DateTime, float)>> fred_interest_rates = new();
+    static readonly private DateTime today = DateTime.Today;
+    static readonly private string today_str = today.ToString("MM/dd/yyyy");
+    public DateTime rates_last_date = today; // will hold earliest existing date over all the FRED series
     public DateTime rates_first_date = new(1980, 1, 1);  // will hold earliest existing date over all the FRED series
-    public DateTime rates_last_date = DateTime.Now; // will hold earliest existing date over all the FRED series
-    private string today_str = DateTime.Now.ToString("MM/dd/yyyy");
     public float[,] rates_array = new float[1, 1]; // the actual rate vector...1 value per day
+    private ConcurrentDictionary<int, List<(System.DateTime, float)>> fred_interest_rates = new();
+    public bool rates_valid = false;
 
     public FredRateReader(DateTime earliestDate) {
         Debug.Assert(earliestDate >= new DateTime(2000, 1, 1),
             $"FredRateReader.cs: earliest date ({earliestDate.Date}) is before 2000-01-01");
-        Debug.Assert(earliestDate.Date <= DateTime.Now.Date,
+        Debug.Assert(earliestDate.Date <= today.Date,
             $"FredRateReader.cs: earliest date ({earliestDate.Date}) is after today ({today_str})");
 
         // read rate data from FRED into ConcurrentDictionary rates; rates is only used temporarily in this constructor
@@ -69,9 +71,14 @@ public class FredRateReader {
             GetFredDataFromUrl(item.Value, item.Key);
         });
 
+#if false // for debugging
+        WriteRawFredRates();
+        System.Environment.Exit(-1); 
+#endif
+
         // Get latest first date, earliest last date over all columns (durations) read from FRED. That is, set rates_first_date,
         // rates_last_date instance variables
-        GetFirstAndLastDates(earliestDate);
+        GetLatestFirstDate(earliestDate);
 
         // now create rates_array with 1 row for EVERY day (including weekends and holidays) between rates_first_date and
         // and rates_global_last_date (usually today), and 1 column for every duration between 0 and 360.
@@ -126,8 +133,58 @@ public class FredRateReader {
         fred_interest_rates.TryAdd(duration, data); // fred_interest_rates contains rates for each duration read
     }
 
+    // writes FRED interest rates read into fred_initerest_rates Dictionary to csv file for further analysis
+    // there will be 1 row for every date including weekends and 1 column for each duration
+    // missing data will be "missing"
+    void WriteRawFredRates() {
+        string filename = "../../../fred_data.csv";
+
+        // since the actual data might have missing values (NaN's), and since each series might have different lengths,
+        // we first copy data into a rectangular array
+        Debug.Assert(seriesNames.Count == fred_interest_rates.Count); // since we'll be using seriesNames in header
+
+        // get length of longest series and earliest first date over all series
+        DateTime earliest_first_date = new DateTime(3000, 12, 31);
+        foreach (var (duration, series) in fred_interest_rates) {
+            if (series[0].Item1 < earliest_first_date)
+                earliest_first_date = series[0].Item1;
+        }
+        int max_length = (today - earliest_first_date).Days;
+
+        // allocate array that can hold all rates read
+        int num_series = seriesNames.Count;
+        var rates = new float[max_length, num_series];
+        new Span2D<float>(rates).Fill(float.NaN); // crappy C# way to fill array with a value
+        // fill in array
+        int col = 0;
+        foreach (var (duration, series) in fred_interest_rates) {
+            foreach (var (date, rate) in series) {
+                int row = (date - earliest_first_date).Days;
+                Debug.Assert(row >= 0 && row < max_length);
+                rates[row, col] = rate;
+            }
+            col++;
+        }
+
+        using StreamWriter file = new(filename);
+        file.WriteLine("date,rate"); // write header
+        for (int row = 0; row < max_length; row++) {
+            // start new line with date based on row index
+            DateTime date = earliest_first_date.AddDays(row);
+            string line = $"{date.ToString("MM/dd/yyyy")}";
+            for (col = 0; col < num_series; col++) {
+                string valstr = ",missing";
+                float rate = rates[row, col];
+                if (!float.IsNaN(rate))
+                    valstr = $",{rate}";
+                line += valstr;
+            }
+            file.WriteLine(line); // start at 1 to skip leading comma
+        }
+    }
+
     // get latest first date over all series
-    private void GetFirstAndLastDates(DateTime earliestDate) {
+    private void GetLatestFirstDate(DateTime earliestDate) {
         rates_first_date = earliestDate;
         foreach ((int duration, List<(DateTime, float)> series) in fred_interest_rates) {
             (DateTime first_date, float rate) = series[0];
@@ -289,10 +346,16 @@ public class FredRateReader {
     public bool RateSanityCheck() {
         const float min_rate = 0;
         const float max_rate = 30f;
-        const float max_rate_change = 0.5f;
+        const float max_rate_change = 5.00f;
         // make sure risk free rates greater than 0 and less than 30
         // make sure the change between any days is less than 0.5
         bool passed = true;
+
+#if false // for debugging
+        // display all rates for duraion 1
+        for (int i = 0; i < rates_array.GetLength(0); i++) 
+            Console.WriteLine($"rate[{i},1] = {rates_array[i, 1]}");
+#endif
 
         // initialize prior_rates for each duration
         float[] prior_rates = new float[rates_array.GetLength(1)];
@@ -304,14 +367,14 @@ public class FredRateReader {
                 DateTime date = rates_first_date.AddDays(row);
                 float rate = rates_array[row, duration];
                 if (rate <= min_rate || rate >= max_rate) {
-                    Console.WriteLine($"ReadFredTreasuryRates.py:rate_sanity_check: rate for duration: {duration}, date: {date}, is not reasonable: {rate}");
+                    Console.WriteLine($"ReadFredTreasuryRates.py:rate_sanity_check: rate for duration: {duration}, date: {date.Date}, is not reasonable: {rate}");
                     passed = false;
                     continue;
                 }
 
                 float change_in_rate = Math.Abs(rate - prior_rates[duration]);
                 if (change_in_rate > max_rate_change) {
-                    Console.WriteLine($"ReadFredTreasuryRates.py:rate_sanity_check: change in rate for duration: {duration}, date: {date}, is not reasonable: {change_in_rate}");
+                    Console.WriteLine($"ReadFredTreasuryRates.py:rate_sanity_check: change in rate for duration: {duration}, date: {date.Date}, is not reasonable: {change_in_rate}");
                     passed = false;
                 }
                 prior_rates[duration] = rate;
@@ -336,10 +399,11 @@ public class FredRateReader {
 }
 
 public class SP500DividendYieldReader {
+    static readonly private DateTime today = DateTime.Today;
     public bool dividends_valid = false;
     public float[] dividends_array = new float[1];  // vector containing sp500 dividend yield in percent
     public DateTime dividends_first_date;  // will hold earliest existing date in dividend_array
-    public readonly DateTime dividends_last_date = DateTime.Now; // will hold latest existing date in dividend_array
+    public DateTime dividends_last_date = today; // will hold latest existing date in dividend_array
     private const string url = "https://data.nasdaq.com/api/v3/datasets/MULTPL/SP500_DIV_YIELD_MONTH.csv?api_key=r1LNaRv-SYEyP9iY8BKj";
 
     public SP500DividendYieldReader(DateTime earliestDate) {
@@ -474,7 +538,7 @@ public class SP500DividendYieldReader {
         foreach (var dividend in dividends_array) {
             if (dividend <= 0 || dividend >= 5) {
                 DateTime date = dividends_first_date.AddDays(1);
-                Console.WriteLine($"ReadFredTreasuryRates.py:dividend_sanity_check: rate for {date}, is not reasonable: {dividend}");
+                Console.WriteLine($"ReadFredTreasuryRates.py:dividend_sanity_check: rate for {date.Date}, is not reasonable: {dividend}");
                 passed = false;
                 continue;
             }
@@ -483,7 +547,7 @@ public class SP500DividendYieldReader {
             prior_dividend = dividend;
             if (dividend_change >= 1) {
                 DateTime date = dividends_first_date.AddDays(1);
-                Console.WriteLine($"ReadFredTreasuryRates.py:dividend_sanity_check: change in dividend for {date}, is not reasonable: {dividend_change}");
+                Console.WriteLine($"ReadFredTreasuryRates.py:dividend_sanity_check: change in dividend for {date.Date}, is not reasonable: {dividend_change}");
                 passed = false;
             }
         }
