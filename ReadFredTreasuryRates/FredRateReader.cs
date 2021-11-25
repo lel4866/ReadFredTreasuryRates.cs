@@ -136,8 +136,8 @@ public class FredRateReader {
     // writes FRED interest rates read into fred_initerest_rates Dictionary to csv file for further analysis
     // there will be 1 row for every date including weekends and 1 column for each duration
     // missing data will be "missing"
-    void WriteRawFredRates() {
-        string filename = "../../../fred_data.csv";
+    public void WriteRawFredRates(string filename) {
+        //string filename = "../../../fred_data.csv";
 
         // since the actual data might have missing values (NaN's), and since each series might have different lengths,
         // we first copy data into a rectangular array
@@ -278,7 +278,7 @@ public class FredRateReader {
                 if (!float.IsNaN(rates_array[j, duration]))
                     break;
             }
-            Debug.Assert(j < index_of_last_rate); // assert we found an Nan
+            Debug.Assert(j <= index_of_last_rate); // assert we found an Nan
             float next_value = rates_array[j, duration]; // next_value is first rate that is not NaN after Nan in row
             Debug.Assert(!float.IsNaN(next_value));
 
@@ -390,8 +390,10 @@ public class FredRateReader {
             $"FredRateReader.cs::RiskFreeRate: requested date ({requestedDate.Date}) is before earliest available ({rates_first_date.Date}).");
         Debug.Assert(requestedDate.Date <= rates_last_date.Date,
             $"FredRateReader.cs::RiskFreeRate: requested date ({requestedDate.Date}) is after latest available ({rates_last_date.Date}).");
+        if (duration == 0)
+            duration = 1;
         Debug.Assert(duration > 0 && duration <= 360,
-            $"FredRateReader.cs::RiskFreeRate: duration must be between 1 and 360, not {duration}.");
+            $"FredRateReader.cs::RiskFreeRate: duration must be between 0 and 360, not {duration}.");
 
         int date_index = (requestedDate - rates_first_date).Days;
         return rates_array[date_index, duration];
@@ -559,8 +561,9 @@ public class SP500DividendYieldReader {
     public float DividendYield(DateTime requestedDate) {
         Debug.Assert(requestedDate >= dividends_first_date,
             $"FredRateReader.cs::DividendYield: requested date ({requestedDate.Date}) is before earliest available ({dividends_first_date.Date}).");
-        Debug.Assert(requestedDate <= dividends_last_date,
-            $"FredRateReader.cs::DividendYield: requested date ({requestedDate.Date}) is after latest available ({dividends_last_date.Date}).");
+        if (requestedDate > dividends_last_date)
+            //$"FredRateReader.cs::DividendYield: requested date ({requestedDate.Date}) is after latest available ({dividends_last_date.Date}).");
+            requestedDate = dividends_last_date;
 
         int date_index = (requestedDate - dividends_first_date).Days;
         return dividends_array[date_index];
